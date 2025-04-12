@@ -20,8 +20,8 @@ Link to the github for source control:
 https://github.com/AlinTcaci/hackathon_distancify
 ```
 
-The UI module was degidned in Figma. In order to check the flow of the application, open Figma and in the Prototype section select Present.
-Login page: allows the user to log in into his accout or create a new accout
+The UI module was designed in Figma. In order to check the flow of the application, open Figma and in the Prototype section select Present.
+Login page: allows the user to log in into his accout or create a new account
 Sign in page: allows the user to create an account using an email, name and a password
 After Loggin In, the user can see the emergencies in the left side of the screen and a map with the current emergencies displayed on the right.
 Using the search bar, the user can search for specific locations.
