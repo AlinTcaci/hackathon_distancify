@@ -8,6 +8,7 @@ python .\aioHttp3
 Aditional libraries that might need to be installed:
 ```
 pip install aiohttp
+pip install asyncio
 ```
 
 To set up the configuration, modify the SIMULATION_CONFIG parameters. Available parameters to be cofigured:
