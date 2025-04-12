@@ -1,3 +1,7 @@
+# Simulation finished. Final results:
+# {'status': 'Finished', 'runningTime': '00:01:31.7318860', 'seed': 'default', 'requestCount': 0, 'maxActiveCalls': 100, 'totalDispatches': 1002, 'targetDispatches': 1000, 'distance': 2443.3580570789563, 'penalty': 0, 'httpRequests': 1237, 'emulatorVersion': 2, 'signature': 'Finished|00:01:31.7318860|default|0|100|1002|1000|2443,3580570789563|0|1237|2|0|0', 'checksum': '3cf335c580db961f08eae61548f1cfc410dd9db70f46e3b1689e039dffd018a9', 'errors': {'missed': 0, 'overDispatched': 0}}
+# Total emergency calls processed: 257
+
 #!/usr/bin/env python3
 import math
 import time
