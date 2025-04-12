@@ -3,25 +3,29 @@ import math
 import time
 import requests
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 BASE_URL = "http://localhost:5000"
-
 SIMULATION_CONFIG = {
     "seed": "default",
-    "targetDispatches": 100,  # Total emergencies to be generated
+    "targetDispatches": 1000,  # Total emergencies to be generated
     "maxActiveCalls": 100     # Maximum number of concurrent emergencies to process in one batch
 }
 
 # Maximum consecutive polls for emptiness before we decide there are no further calls.
 MAX_CONSECUTIVE_EMPTY_CALLS = 1
 
+# Create a global session for connection reuse.
+session = requests.Session()
+
 def call_api(endpoint, method="GET", payload=None, params=None):
     url = f"{BASE_URL}{endpoint}"
     try:
         if method.upper() == "GET":
-            response = requests.get(url, params=params)
+            response = session.get(url, params=params)
         elif method.upper() == "POST":
-            response = requests.post(url, json=payload, params=params)
+            response = session.post(url, json=payload, params=params)
         else:
             raise ValueError("Unsupported HTTP method")
         response.raise_for_status()
@@ -44,7 +48,6 @@ def get_location_details():
     data = call_api("/locations")
     if not data:
         raise RuntimeError("Failed to retrieve locations")
-
     locations = {}
     for loc in data:
         city = loc.get("city") or loc.get("name")
@@ -160,7 +163,7 @@ def dispatch_police(source_city, target_city, count, location_details):
 def process_multi_service_emergency(call, location_details):
     """
     Process an emergency call that may request multiple service types.
-    It expects "city" and a "requests" array in the call.
+    This version executes the three resource availability API calls concurrently.
     """
     target_city = call.get("city")
     if not target_city:
@@ -172,15 +175,18 @@ def process_multi_service_emergency(call, location_details):
         print("Error: No service requests provided in the call.")
         return False
 
-    # Build a dictionary of available resources for each service type
-    available_resources = {
-        "Medical": get_available_ambulances(),
-        "Fire": get_available_firefighters(),
-        "Police": get_available_police()
-    }
+    # Fetch available resources concurrently.
+    with ThreadPoolExecutor(max_workers=3) as local_executor:
+        future_med = local_executor.submit(get_available_ambulances)
+        future_fire = local_executor.submit(get_available_firefighters)
+        future_police = local_executor.submit(get_available_police)
+        available_resources = {
+            "Medical": future_med.result(),
+            "Fire": future_fire.result(),
+            "Police": future_police.result()
+        }
 
     all_success = True  # Track if all dispatches were fulfilled
-
     for req in requests_list:
         service_type = req.get("Type")
         quantity_needed = req.get("Quantity", 0)
@@ -199,7 +205,7 @@ def process_multi_service_emergency(call, location_details):
             print(f"Error: Unknown service type '{service_type}'.")
             continue
 
-        # Gather candidate cities with available units, sorted by Euclidean distance
+        # Gather candidate cities with available units, sorted by Euclidean distance.
         candidates = []
         for city, count in available.items():
             if count > 0 and city in location_details:
@@ -231,15 +237,12 @@ def process_multi_service_emergency(call, location_details):
             all_success = False
         else:
             print(f"Emergency resolved: all required {service_type} units dispatched successfully.")
-
     return all_success
 
 def get_pending_calls():
     """
     Retrieve emergencies from the /calls/queue endpoint.
-    We assume the API returns a list, and you could also pass a limit parameter.
     """
-    # Optionally, you can pass a limit param if your API supports it:
     params = {"limit": SIMULATION_CONFIG["maxActiveCalls"]}
     data = call_api("/calls/queue", params=params)
     if not data or (isinstance(data, str) and data.strip() == ""):
@@ -249,7 +252,6 @@ def get_pending_calls():
 def request_next_call():
     """
     Request the next emergency call using the /calls/next endpoint.
-    If no valid call is returned, we yield an empty list.
     """
     data = call_api("/calls/next")
     if not data or (isinstance(data, str) and data.strip() == ""):
@@ -257,10 +259,10 @@ def request_next_call():
     return data
 
 def main():
-    print("Starting emergency service simulation...")
+    print("Starting emergency service simulation (optimized)...")
 
     # Reset the simulation.
-    reset_result = call_api("/control/reset", method="POST", params=SIMULATION_CONFIG)
+    reset_result = call_api("/control/reset", method="POST", payload=None, params=SIMULATION_CONFIG)
     if reset_result is None:
         print("Failed to reset simulation.")
         return
@@ -279,33 +281,49 @@ def main():
     total_calls_processed = 0
     consecutive_empty_calls = 0
 
-    # Loop until we reach the target or decide no further calls are coming.
-    while total_calls_processed < SIMULATION_CONFIG["targetDispatches"]:
-        pending_calls = get_pending_calls()
-        if pending_calls:
-            consecutive_empty_calls = 0
-            print(f"Processing batch of {len(pending_calls)} call(s)...")
-            for call in pending_calls:
-                if isinstance(call, str) and call.strip() == "":
-                    continue
-                success = process_multi_service_emergency(call, location_details)
-                if success:
-                    total_calls_processed += 1
-                if total_calls_processed >= SIMULATION_CONFIG["targetDispatches"]:
-                    break
-                time.sleep(0.1)  # brief pause between processing calls
-        else:
-            next_call = request_next_call()
-            if not next_call:
-                consecutive_empty_calls += 1
-                print("Queue is empty, requesting next call... "
-                      f"(consecutive empty calls: {consecutive_empty_calls})")
-                if consecutive_empty_calls >= MAX_CONSECUTIVE_EMPTY_CALLS:
-                    print("No further calls available; stopping simulation.")
-                    break
-            else:
+    # A lock for synchronizing updates to total_calls_processed.
+    counter_lock = threading.Lock()
+
+    # Create a thread pool for processing emergency calls concurrently.
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        while total_calls_processed < SIMULATION_CONFIG["targetDispatches"]:
+            pending_calls = get_pending_calls()
+            if pending_calls:
                 consecutive_empty_calls = 0
-        time.sleep(1)
+                print(f"Processing batch of {len(pending_calls)} call(s)...")
+                futures = []
+                for call in pending_calls:
+                    if isinstance(call, str) and call.strip() == "":
+                        continue
+                    # Submit the processing task concurrently.
+                    future = executor.submit(process_multi_service_emergency, call, location_details)
+                    futures.append(future)
+                # As futures complete, update the processed count.
+                for future in as_completed(futures):
+                    try:
+                        success = future.result()
+                        if success:
+                            with counter_lock:
+                                total_calls_processed += 1
+                    except Exception as e:
+                        print("Error processing call:", e)
+                    if total_calls_processed >= SIMULATION_CONFIG["targetDispatches"]:
+                        break
+                # (Optional) Remove or reduce the delay if needed.
+                # time.sleep(0.1)
+            else:
+                next_call = request_next_call()
+                if not next_call:
+                    consecutive_empty_calls += 1
+                    print("Queue is empty, requesting next call... "
+                          f"(consecutive empty calls: {consecutive_empty_calls})")
+                    if consecutive_empty_calls >= MAX_CONSECUTIVE_EMPTY_CALLS:
+                        print("No further calls available; stopping simulation.")
+                        break
+                else:
+                    consecutive_empty_calls = 0
+            # Reduced sleep delay for faster looping.
+            # time.sleep(0.1)
 
     print("\nAll emergencies processed or no further calls available. Stopping simulation...")
     stop_result = call_api("/control/stop", method="POST")
