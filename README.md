@@ -2,7 +2,7 @@ The Application solves the problems 1-2-3
 
 You can run the application by running the command:
 ```
-python .\aioHttp
+python .\aioHttp3
 ```
 
 Aditional libraries that might need to be installed:
